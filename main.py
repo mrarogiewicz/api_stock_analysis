@@ -10,6 +10,10 @@ app = FastAPI()
 
 VALID_API_KEY = os.environ.get("API_KEY")
 
+SCRAPE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+}
+
 security = HTTPBearer()
 
 
@@ -18,7 +22,6 @@ security = HTTPBearer()
 class FinancialRequest(BaseModel):
     ticker: str
     period: str = "annual"  # "quarterly" alebo "annual"
-
 
 
 # --- Helpers ---
