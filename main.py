@@ -31,7 +31,7 @@ _schema_cache = {
     "data": None,
     "loaded_at": 0,
 }
-CACHE_TTL = 300  # sekúnd
+CACHE_TTL = 5  # sekúnd
 
 
 def get_schema() -> dict:
