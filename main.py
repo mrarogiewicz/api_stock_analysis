@@ -26,12 +26,12 @@ UNIT_MULTIPLIERS = {
     "Billions": 1_000_000_000,
 }
 
-# --- Schema cache (5 minút) ---
+# --- Schema cache ---
 _schema_cache = {
     "data": None,
     "loaded_at": 0,
 }
-CACHE_TTL = 5  # sekúnd
+CACHE_TTL = 5 # sekúnd
 
 
 def get_schema() -> dict:
@@ -171,28 +171,61 @@ def get_ratios(body: FinancialRequest, _=Depends(check_auth)):
 @app.post("/income")
 def get_income(body: FinancialRequest, _=Depends(check_auth)):
     try:
-        url = build_url(f"https://stockanalysis.com/stocks/{body.ticker.lower()}/financials/", body.period)
-        data, _ = fetch_and_parse(url)
+        url = build_url(
+            f"https://stockanalysis.com/stocks/{body.ticker.lower()}/financials/",
+            body.period
+        )
+        records, unit = fetch_and_parse(url)
+        schema = get_schema().get("income", {})
+        multiplier = UNIT_MULTIPLIERS.get(unit, 1)
+        data = apply_schema(records, schema, multiplier)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Chyba: {e}")
-    return {"ticker": body.ticker.upper(), "period": body.period, "data": data}
+    return {
+        "ticker": body.ticker.upper(),
+        "period": body.period,
+        "detected_unit": unit,
+        "data": data
+    }
 
 
 @app.post("/balance")
 def get_balance(body: FinancialRequest, _=Depends(check_auth)):
     try:
-        url = build_url(f"https://stockanalysis.com/stocks/{body.ticker.lower()}/financials/balance-sheet/", body.period)
-        data, _ = fetch_and_parse(url)
+        url = build_url(
+            f"https://stockanalysis.com/stocks/{body.ticker.lower()}/financials/balance-sheet/",
+            body.period
+        )
+        records, unit = fetch_and_parse(url)
+        schema = get_schema().get("balance", {})
+        multiplier = UNIT_MULTIPLIERS.get(unit, 1)
+        data = apply_schema(records, schema, multiplier)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Chyba: {e}")
-    return {"ticker": body.ticker.upper(), "period": body.period, "data": data}
+    return {
+        "ticker": body.ticker.upper(),
+        "period": body.period,
+        "detected_unit": unit,
+        "data": data
+    }
 
 
 @app.post("/cashflow")
 def get_cashflow(body: FinancialRequest, _=Depends(check_auth)):
     try:
-        url = build_url(f"https://stockanalysis.com/stocks/{body.ticker.lower()}/financials/cash-flow-statement/", body.period)
-        data, _ = fetch_and_parse(url)
+        url = build_url(
+            f"https://stockanalysis.com/stocks/{body.ticker.lower()}/financials/cash-flow-statement/",
+            body.period
+        )
+        records, unit = fetch_and_parse(url)
+        schema = get_schema().get("cashflow", {})
+        multiplier = UNIT_MULTIPLIERS.get(unit, 1)
+        data = apply_schema(records, schema, multiplier)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Chyba: {e}")
-    return {"ticker": body.ticker.upper(), "period": body.period, "data": data}
+    return {
+        "ticker": body.ticker.upper(),
+        "period": body.period,
+        "detected_unit": unit,
+        "data": data
+    }
