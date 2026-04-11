@@ -90,20 +90,20 @@ def is_percentage_value(value) -> bool:
 def apply_schema(records: list, schema: dict, multiplier: int) -> list:
     """
     Filtruje riadky podľa schémy a aplikuje multiplikátor.
+    - Partial, case-insensitive match na názov metriky.
     - Vracia len metriky definované v schéme (v rovnakom poradí).
     - Násobí len tie, kde multiply=true (a hodnota nie je %).
     """
     result = []
     for metric_name, config in schema.items():
-        # Nájdi riadok s touto metrikou
         record = next(
-            (r for r in records if str(r.get("metric", "")).strip() == metric_name),
+            (r for r in records if metric_name.lower() in str(r.get("metric", "")).lower()),
             None
         )
         if record is None:
-            continue  # metrika na stránke nie je (závisí od firmy)
+            continue
 
-        row = dict(record)  # kópia aby sme nemodifikovali originál
+        row = dict(record)
 
         if multiplier != 1 and config.get("multiply", False):
             for col, val in row.items():
