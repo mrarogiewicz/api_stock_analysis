@@ -4,6 +4,8 @@ import time
 import requests
 import pandas as pd
 from io import StringIO
+from datetime import datetime
+from typing import Optional
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
@@ -31,7 +33,7 @@ _schema_cache = {
     "data": None,
     "loaded_at": 0,
 }
-CACHE_TTL = 5 # sekúnd
+CACHE_TTL = 300  # sekúnd
 
 
 def get_schema() -> dict:
@@ -50,7 +52,7 @@ def get_schema() -> dict:
 
 class FinancialRequest(BaseModel):
     ticker: str
-    period: str = "annual"
+    period: Optional[str] = None  # None = annual aj quarterly, "annual" alebo "quarterly"
 
 
 # --- Helpers ---
@@ -71,6 +73,20 @@ def detect_unit(html: str) -> str:
     return "Raw"
 
 
+def parse_column_date(col_name: str) -> str | None:
+    """
+    Parsuje názov stĺpca ako 'Dec '25 Dec 31, 2025' na ISO dátum '2025-12-31'.
+    """
+    match = re.search(r'(\w+ \d+, \d{4})$', str(col_name))
+    if match:
+        try:
+            dt = datetime.strptime(match.group(1), "%b %d, %Y")
+            return dt.strftime("%Y-%m-%d")
+        except ValueError:
+            return None
+    return None
+
+
 def try_parse_number(value) -> float | None:
     if isinstance(value, (int, float)):
         return float(value)
@@ -89,10 +105,10 @@ def is_percentage_value(value) -> bool:
 
 def apply_schema(records: list, schema: dict, multiplier: int) -> list:
     """
-    Filtruje riadky podľa schémy a aplikuje multiplikátor.
+    Filtruje riadky podľa schémy, aplikuje multiplikátor a formátuje dátumy.
     - Partial, case-insensitive match na názov metriky.
-    - Vracia len metriky definované v schéme (v rovnakom poradí).
-    - Násobí len tie, kde multiply=true (a hodnota nie je %).
+    - Každá metrika obsahuje 'unit' z Gistu.
+    - Kľúče values sú ISO dátumy (2025-12-31).
     """
     result = []
     for metric_name, config in schema.items():
@@ -104,18 +120,32 @@ def apply_schema(records: list, schema: dict, multiplier: int) -> list:
             continue
 
         row = dict(record)
+        unit = config.get("unit", "raw")
+        should_multiply = config.get("multiply", False)
 
-        if multiplier != 1 and config.get("multiply", False):
-            for col, val in row.items():
-                if col == "metric":
-                    continue
-                if is_percentage_value(val):
-                    continue
+        values = {}
+        for col, val in row.items():
+            if col == "metric":
+                continue
+            iso_date = parse_column_date(col)
+            if iso_date is None:
+                continue
+
+            if should_multiply and multiplier != 1 and not is_percentage_value(val):
                 parsed = try_parse_number(val)
                 if parsed is not None:
-                    row[col] = parsed * multiplier
+                    values[iso_date] = parsed * multiplier
+                else:
+                    values[iso_date] = val
+            else:
+                parsed = try_parse_number(val)
+                values[iso_date] = parsed if parsed is not None else val
 
-        result.append(row)
+        result.append({
+            "metric": row["metric"],
+            "unit": unit,
+            "values": values
+        })
 
     return result
 
@@ -140,6 +170,24 @@ def fetch_and_parse(url: str) -> tuple[list, str]:
     return df.to_dict(orient="records"), unit
 
 
+def fetch_period_data(base_url: str, period: str, schema: dict) -> dict:
+    """Stiahne a spracuje dáta pre jeden period."""
+    url = build_url(base_url, period)
+    records, unit = fetch_and_parse(url)
+    multiplier = UNIT_MULTIPLIERS.get(unit, 1)
+    data = apply_schema(records, schema, multiplier)
+    return {"data": data}
+
+
+def build_response(ticker: str, base_url: str, schema: dict, period: Optional[str]) -> dict:
+    """Stiahne dáta pre jeden alebo oba periody podľa parametra."""
+    periods_to_fetch = ["annual", "quarterly"] if period is None else [period]
+    result = {"ticker": ticker.upper(), "periods": {}}
+    for p in periods_to_fetch:
+        result["periods"][p] = fetch_period_data(base_url, p, schema)
+    return result
+
+
 # --- Endpoints ---
 
 @app.get("/keepalive")
@@ -150,82 +198,38 @@ def keepalive():
 @app.post("/ratios")
 def get_ratios(body: FinancialRequest, _=Depends(check_auth)):
     try:
-        url = build_url(
-            f"https://stockanalysis.com/stocks/{body.ticker.lower()}/financials/ratios/",
-            body.period
-        )
-        records, unit = fetch_and_parse(url)
+        base_url = f"https://stockanalysis.com/stocks/{body.ticker.lower()}/financials/ratios/"
         schema = get_schema().get("ratios", {})
-        multiplier = UNIT_MULTIPLIERS.get(unit, 1)
-        data = apply_schema(records, schema, multiplier)
+        return build_response(body.ticker, base_url, schema, body.period)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Chyba: {e}")
-    return {
-        "ticker": body.ticker.upper(),
-        "period": body.period,
-        "detected_unit": unit,
-        "data": data
-    }
 
 
 @app.post("/income")
 def get_income(body: FinancialRequest, _=Depends(check_auth)):
     try:
-        url = build_url(
-            f"https://stockanalysis.com/stocks/{body.ticker.lower()}/financials/",
-            body.period
-        )
-        records, unit = fetch_and_parse(url)
+        base_url = f"https://stockanalysis.com/stocks/{body.ticker.lower()}/financials/"
         schema = get_schema().get("income", {})
-        multiplier = UNIT_MULTIPLIERS.get(unit, 1)
-        data = apply_schema(records, schema, multiplier)
+        return build_response(body.ticker, base_url, schema, body.period)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Chyba: {e}")
-    return {
-        "ticker": body.ticker.upper(),
-        "period": body.period,
-        "detected_unit": unit,
-        "data": data
-    }
 
 
 @app.post("/balance")
 def get_balance(body: FinancialRequest, _=Depends(check_auth)):
     try:
-        url = build_url(
-            f"https://stockanalysis.com/stocks/{body.ticker.lower()}/financials/balance-sheet/",
-            body.period
-        )
-        records, unit = fetch_and_parse(url)
+        base_url = f"https://stockanalysis.com/stocks/{body.ticker.lower()}/financials/balance-sheet/"
         schema = get_schema().get("balance", {})
-        multiplier = UNIT_MULTIPLIERS.get(unit, 1)
-        data = apply_schema(records, schema, multiplier)
+        return build_response(body.ticker, base_url, schema, body.period)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Chyba: {e}")
-    return {
-        "ticker": body.ticker.upper(),
-        "period": body.period,
-        "detected_unit": unit,
-        "data": data
-    }
 
 
 @app.post("/cashflow")
 def get_cashflow(body: FinancialRequest, _=Depends(check_auth)):
     try:
-        url = build_url(
-            f"https://stockanalysis.com/stocks/{body.ticker.lower()}/financials/cash-flow-statement/",
-            body.period
-        )
-        records, unit = fetch_and_parse(url)
+        base_url = f"https://stockanalysis.com/stocks/{body.ticker.lower()}/financials/cash-flow-statement/"
         schema = get_schema().get("cashflow", {})
-        multiplier = UNIT_MULTIPLIERS.get(unit, 1)
-        data = apply_schema(records, schema, multiplier)
+        return build_response(body.ticker, base_url, schema, body.period)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Chyba: {e}")
-    return {
-        "ticker": body.ticker.upper(),
-        "period": body.period,
-        "detected_unit": unit,
-        "data": data
-    }
